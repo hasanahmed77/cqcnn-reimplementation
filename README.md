@@ -36,6 +36,36 @@ results/classification/oasis2_coronal_128_64/oasis2_coronal_2qubit_classical.csv
 results/classification/oasis2_coronal_128_64/oasis2_coronal_2qubit_hybrid.csv
 ```
 
+By default, the OASIS-2 coronal run trains both models for 10 trials using
+seeds 42 through 51. Final rows include a convergence status, and summary rows
+include failure counts/rates for stuck trials.
+
+When the hybrid model runs, it also writes gradient diagnostics here:
+
+```text
+results/classification/oasis2_coronal_128_64/oasis2_coronal_2qubit_hybrid_diagnostics.csv
+```
+
+To test whether the hybrid model is sensitive to optimizer step size, run the
+hybrid-only learning-rate sweep:
+
+```bash
+source .venv/bin/activate
+python experiments/oasis2/oasis2_coronal_lr_sweep.py
+```
+
+Sweep outputs are written under:
+
+```text
+results/classification/oasis2_coronal_128_64/lr_sweep/
+```
+
+The sweep summary is:
+
+```text
+results/classification/oasis2_coronal_128_64/lr_sweep/hybrid_lr_sweep_summary.csv
+```
+
 ## Analyze Results In Notebook
 
 ```bash

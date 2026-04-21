@@ -1,0 +1,2 @@
+model,dataset,plane,n_qubits,trial,seed,epoch,train_loss,train_acc,test_loss,test_acc,test_macro_f1,test_balanced_acc,qnn_grad_norm,qnn_weight_update_norm,fc2_grad_norm,fc2_weight_update_norm,fc3_grad_norm,fc3_weight_update_norm,convergence_status,failure_macro_f1_threshold,failure_balanced_acc_threshold
+hybrid,oasis-2,coronal,2,1,42,1,1.5707107409834862,0.5,1.5101948222145438,0.5,0.3333333333333333,0.5,0.19690906256437302,0.0009661795702413656,0.671198628688136,0.0012351510281750533,1.0423666746885003,0.0006809852103586195,stuck,0.4,0.55

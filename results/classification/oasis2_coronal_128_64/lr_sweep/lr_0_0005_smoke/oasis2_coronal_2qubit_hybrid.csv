@@ -1,0 +1,8 @@
+row_type,model,dataset,plane,n_qubits,eval_split,trial,seed,epoch,train_loss,train_acc,test_loss,test_acc,test_macro_f1,test_balanced_acc,precision,recall,f1,macro_f1,balanced_acc,sensitivity,specificity,auc,tn,fp,fn,tp,lr,convergence_status,failure_count,success_count,failure_rate,failure_macro_f1_threshold,failure_balanced_acc_threshold
+epoch,hybrid,oasis-2,coronal,2,original,1,42,1,1.5707107409834862,0.5,1.5101948222145438,0.5,0.3333333333333333,0.5,,,,,,,,,,,,,0.0005,,,,,0.4,0.55
+final,hybrid,oasis-2,coronal,2,original,1,42,1,1.5707107409834862,0.5,1.5101948222145438,0.5,0.3333333333333333,0.5,0.5,1.0,0.6666666666666666,0.3333333333333333,0.5,1.0,0.0,0.69140625,0,32,0,32,0.0005,stuck,,,,0.4,0.55
+final,hybrid,oasis-2,coronal,2,balanced,1,42,1,1.5707107409834862,0.5,1.5101948222145438,0.5,0.3333333333333333,0.5,0.5,1.0,0.6666666666666666,0.3333333333333333,0.5,1.0,0.0,0.69140625,0,32,0,32,0.0005,stuck,,,,0.4,0.55
+summary,hybrid_mean,oasis-2,coronal,2,original,,,,1.5707107409834862,0.5,1.5101948222145438,0.5,,,0.5,1.0,0.6666666666666666,0.3333333333333333,0.5,1.0,0.0,0.69140625,0.0,32.0,0.0,32.0,,summary,1,0,1.0,0.4,0.55
+summary,hybrid_std,oasis-2,coronal,2,original,,,,0.0,0.0,0.0,0.0,,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,,summary,,,,0.4,0.55
+summary,hybrid_mean,oasis-2,coronal,2,balanced,,,,1.5707107409834862,0.5,1.5101948222145438,0.5,,,0.5,1.0,0.6666666666666666,0.3333333333333333,0.5,1.0,0.0,0.69140625,0.0,32.0,0.0,32.0,,summary,1,0,1.0,0.4,0.55
+summary,hybrid_std,oasis-2,coronal,2,balanced,,,,0.0,0.0,0.0,0.0,,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,,summary,,,,0.4,0.55

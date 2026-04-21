@@ -31,6 +31,10 @@ DATA_ROOT = Path(
 RESULTS_DIR = Path("results/classification/oasis2_coronal_128_64")
 LABEL_MAPPING = {"nondemented": 0, "moderate_dementia": 1}
 CLASS_NAMES = ["nondemented", "moderate_dementia"]
+DEFAULT_SEEDS = [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+FAILURE_MACRO_F1_THRESHOLD = 0.40
+FAILURE_BALANCED_ACC_THRESHOLD = 0.55
+DIAGNOSTIC_MODULES = ("fc2", "qnn", "fc3")
 
 
 @dataclass
@@ -48,6 +52,7 @@ class ExperimentConfig:
     test_limit: int | None
     device: torch.device
     n_qubits: int = 2
+    result_stem: str | None = None
 
 
 def set_seed(seed):
@@ -255,21 +260,84 @@ def make_loaders(config, seed):
     return train_loader, test_loader, balanced_test_loader
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device):
+def clone_module_params(module):
+    return [param.detach().clone() for param in module.parameters()]
+
+
+def module_grad_norm(module):
+    squared_norm = 0.0
+    for param in module.parameters():
+        if param.grad is None:
+            continue
+        squared_norm += param.grad.detach().norm(2).item() ** 2
+    return squared_norm**0.5
+
+
+def module_update_norm(module, params_before):
+    squared_norm = 0.0
+    for before, after in zip(params_before, module.parameters()):
+        squared_norm += (after.detach() - before).norm(2).item() ** 2
+    return squared_norm**0.5
+
+
+def capture_params_before_step(model):
+    return {
+        module_name: clone_module_params(getattr(model, module_name))
+        for module_name in DIAGNOSTIC_MODULES
+    }
+
+
+def capture_grad_norms(model):
+    return {
+        f"{module_name}_grad_norm": module_grad_norm(getattr(model, module_name))
+        for module_name in DIAGNOSTIC_MODULES
+    }
+
+
+def capture_update_norms(model, params_before):
+    return {
+        f"{module_name}_weight_update_norm": module_update_norm(
+            getattr(model, module_name), params_before[module_name]
+        )
+        for module_name in DIAGNOSTIC_MODULES
+    }
+
+
+def mean_diagnostics(diagnostic_rows):
+    if not diagnostic_rows:
+        return {}
+
+    keys = diagnostic_rows[0].keys()
+    return {
+        key: float(np.mean([row[key] for row in diagnostic_rows]))
+        for key in keys
+    }
+
+
+def train_one_epoch(model, loader, optimizer, criterion, device, collect_diagnostics=False):
     model.train()
     total_loss = 0.0
     y_true = []
     y_pred = []
+    diagnostic_rows = []
 
     for images, labels in loader:
         images = images.to(device)
         labels = labels.to(device)
 
         optimizer.zero_grad()
+        params_before = (
+            capture_params_before_step(model) if collect_diagnostics else None
+        )
         outputs = model(images)
         loss = criterion(outputs, labels)
         loss.backward()
+        if collect_diagnostics:
+            batch_diagnostics = capture_grad_norms(model)
         optimizer.step()
+        if collect_diagnostics:
+            batch_diagnostics.update(capture_update_norms(model, params_before))
+            diagnostic_rows.append(batch_diagnostics)
 
         total_loss += loss.item() * images.size(0)
         y_true.extend(labels.detach().cpu().numpy().tolist())
@@ -278,6 +346,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
     return {
         "loss": total_loss / len(loader.dataset),
         "acc": accuracy_score(y_true, y_pred),
+        "diagnostics": mean_diagnostics(diagnostic_rows),
     }
 
 
@@ -334,6 +403,15 @@ def classification_metrics(y_true, y_pred, y_prob):
     }
 
 
+def convergence_status(metrics):
+    if (
+        metrics["macro_f1"] <= FAILURE_MACRO_F1_THRESHOLD
+        or metrics["balanced_acc"] <= FAILURE_BALANCED_ACC_THRESHOLD
+    ):
+        return "stuck"
+    return "converged"
+
+
 def append_row(path, fieldnames, row):
     path.parent.mkdir(parents=True, exist_ok=True)
     should_write_header = not path.exists()
@@ -353,8 +431,21 @@ def write_summary(path, fieldnames, rows):
 
 
 def run_experiment(config):
-    result_csv = config.output_dir / f"oasis2_coronal_2qubit_{config.model_name}.csv"
+    result_stem = (
+        config.result_stem
+        if config.result_stem is not None
+        else f"oasis2_coronal_2qubit_{config.model_name}"
+    )
+    result_csv = config.output_dir / f"{result_stem}.csv"
+    diagnostics_stem = (
+        f"{result_stem}_diagnostics"
+        if config.result_stem is not None
+        else "oasis2_coronal_2qubit_hybrid_diagnostics"
+    )
+    diagnostics_csv = config.output_dir / f"{diagnostics_stem}.csv"
     result_csv.unlink(missing_ok=True)
+    if config.model_name == "hybrid":
+        diagnostics_csv.unlink(missing_ok=True)
 
     fields = [
         "row_type",
@@ -385,6 +476,36 @@ def run_experiment(config):
         "fn",
         "tp",
         "lr",
+        "convergence_status",
+        "failure_count",
+        "success_count",
+        "failure_rate",
+        "failure_macro_f1_threshold",
+        "failure_balanced_acc_threshold",
+    ]
+    diagnostic_fields = [
+        "model",
+        "dataset",
+        "plane",
+        "n_qubits",
+        "trial",
+        "seed",
+        "epoch",
+        "train_loss",
+        "train_acc",
+        "test_loss",
+        "test_acc",
+        "test_macro_f1",
+        "test_balanced_acc",
+        "qnn_grad_norm",
+        "qnn_weight_update_norm",
+        "fc2_grad_norm",
+        "fc2_weight_update_norm",
+        "fc3_grad_norm",
+        "fc3_weight_update_norm",
+        "convergence_status",
+        "failure_macro_f1_threshold",
+        "failure_balanced_acc_threshold",
     ]
 
     rows_for_comparison = []
@@ -414,10 +535,16 @@ def run_experiment(config):
 
         for epoch in range(1, config.epochs + 1):
             train_metrics = train_one_epoch(
-                model, train_loader, optimizer, criterion, config.device
+                model,
+                train_loader,
+                optimizer,
+                criterion,
+                config.device,
+                collect_diagnostics=config.model_name == "hybrid",
             )
             test_metrics = evaluate(model, test_loader, criterion, config.device)
             lr = optimizer.param_groups[0]["lr"]
+            epoch_convergence_status = convergence_status(test_metrics)
 
             append_row(
                 result_csv,
@@ -451,8 +578,50 @@ def run_experiment(config):
                     "fn": "",
                     "tp": "",
                     "lr": lr,
+                    "convergence_status": "",
+                    "failure_count": "",
+                    "success_count": "",
+                    "failure_rate": "",
+                    "failure_macro_f1_threshold": FAILURE_MACRO_F1_THRESHOLD,
+                    "failure_balanced_acc_threshold": FAILURE_BALANCED_ACC_THRESHOLD,
                 },
             )
+            if config.model_name == "hybrid":
+                diagnostics = train_metrics["diagnostics"]
+                append_row(
+                    diagnostics_csv,
+                    diagnostic_fields,
+                    {
+                        "model": config.model_name,
+                        "dataset": "oasis-2",
+                        "plane": "coronal",
+                        "n_qubits": config.n_qubits,
+                        "trial": trial_idx,
+                        "seed": seed,
+                        "epoch": epoch,
+                        "train_loss": train_metrics["loss"],
+                        "train_acc": train_metrics["acc"],
+                        "test_loss": test_metrics["loss"],
+                        "test_acc": test_metrics["acc"],
+                        "test_macro_f1": test_metrics["macro_f1"],
+                        "test_balanced_acc": test_metrics["balanced_acc"],
+                        "qnn_grad_norm": diagnostics["qnn_grad_norm"],
+                        "qnn_weight_update_norm": diagnostics[
+                            "qnn_weight_update_norm"
+                        ],
+                        "fc2_grad_norm": diagnostics["fc2_grad_norm"],
+                        "fc2_weight_update_norm": diagnostics[
+                            "fc2_weight_update_norm"
+                        ],
+                        "fc3_grad_norm": diagnostics["fc3_grad_norm"],
+                        "fc3_weight_update_norm": diagnostics[
+                            "fc3_weight_update_norm"
+                        ],
+                        "convergence_status": epoch_convergence_status,
+                        "failure_macro_f1_threshold": FAILURE_MACRO_F1_THRESHOLD,
+                        "failure_balanced_acc_threshold": FAILURE_BALANCED_ACC_THRESHOLD,
+                    },
+                )
 
             print(
                 f"Epoch {epoch}/{config.epochs} | "
@@ -500,6 +669,12 @@ def run_experiment(config):
                 "fn": metrics["fn"],
                 "tp": metrics["tp"],
                 "lr": optimizer.param_groups[0]["lr"],
+                "convergence_status": convergence_status(metrics),
+                "failure_count": "",
+                "success_count": "",
+                "failure_rate": "",
+                "failure_macro_f1_threshold": FAILURE_MACRO_F1_THRESHOLD,
+                "failure_balanced_acc_threshold": FAILURE_BALANCED_ACC_THRESHOLD,
             }
             append_row(result_csv, fields, row)
             rows_for_comparison.append(row)
@@ -549,11 +724,25 @@ def summarize_rows(rows):
                 "test_macro_f1": "",
                 "test_balanced_acc": "",
                 "lr": "",
+                "convergence_status": "summary",
+                "failure_macro_f1_threshold": FAILURE_MACRO_F1_THRESHOLD,
+                "failure_balanced_acc_threshold": FAILURE_BALANCED_ACC_THRESHOLD,
             }
             for metric in metric_names:
                 summary[metric] = reducer([float(row[metric]) for row in group])
             for metric in count_names:
                 summary[metric] = reducer([float(row[metric]) for row in group])
+            if stat_name == "mean":
+                failure_count = sum(
+                    1 for row in group if row["convergence_status"] == "stuck"
+                )
+                summary["failure_count"] = failure_count
+                summary["success_count"] = len(group) - failure_count
+                summary["failure_rate"] = failure_count / len(group)
+            else:
+                summary["failure_count"] = ""
+                summary["success_count"] = ""
+                summary["failure_rate"] = ""
             summary_rows.append(summary)
 
     return summary_rows
@@ -630,18 +819,30 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--trials", type=int, default=3)
-    parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
+    parser.add_argument("--trials", type=int, default=10)
+    parser.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS)
     parser.add_argument("--train-limit", type=int, default=128)
     parser.add_argument("--test-limit", type=int, default=64)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--result-stem",
+        default=None,
+        help="Optional custom CSV filename stem for a single-model run.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if len(args.seeds) < args.trials:
+        raise ValueError(
+            f"Need at least {args.trials} seeds, but only received {len(args.seeds)}."
+        )
+
     device = torch.device(args.device)
     model_names = ["classical", "hybrid"] if args.model == "both" else [args.model]
+    if args.result_stem is not None and len(model_names) != 1:
+        raise ValueError("--result-stem can only be used with --model classical or hybrid.")
 
     all_rows = []
     for model_name in model_names:
@@ -658,6 +859,7 @@ def main():
             train_limit=args.train_limit,
             test_limit=args.test_limit,
             device=device,
+            result_stem=args.result_stem,
         )
         rows, _ = run_experiment(config)
         all_rows.extend(rows)
